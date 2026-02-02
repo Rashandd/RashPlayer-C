@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Optional, Tuple
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
-    QLabel, QLineEdit, QComboBox, QGroupBox, QListWidget,
+    QComboBox, QGroupBox, QListWidget, QListWidgetItem,
     QSplitter, QFrame, QInputDialog, QMessageBox
 )
 from PySide6.QtCore import Qt, Signal, QPoint, QRect
@@ -35,13 +35,55 @@ class ScannerPreview(QWidget):
         self._selection_rect: Optional[QRect] = None
         self._mode = "region"  # "region" or "tap"
         
+        # Rendering state
+        self._target_rect = QRect()
+        self._scale_x = 1.0
+        self._scale_y = 1.0
+        
         # Overlay data
         self._regions: list = []
         self._targets: list = []
         self._current_state = "IDLE"
         
-        self.setMinimumSize(360, 640)
         self.setMouseTracking(True)
+        self.setMinimumSize(200, 200)
+    
+    def _update_geometry(self):
+        """Calculate display geometry to maintain aspect ratio"""
+        if self._frame is None:
+            self._target_rect = self.rect()
+            return
+
+        w_w = self.width()
+        w_h = self.height()
+        f_w = self._frame_width
+        f_h = self._frame_height
+        
+        if f_w <= 0 or f_h <= 0:
+            return
+
+        w_ratio = w_w / w_h
+        f_ratio = f_w / f_h
+        
+        if f_ratio > w_ratio:
+            # Frame is wider than widget
+            d_w = w_w
+            d_h = int(w_w / f_ratio)
+        else:
+            # Frame is taller than widget
+            d_h = w_h
+            d_w = int(w_h * f_ratio)
+            
+        x = (w_w - d_w) // 2
+        y = (w_h - d_h) // 2
+        
+        self._target_rect = QRect(x, y, d_w, d_h)
+        self._scale_x = d_w / f_w
+        self._scale_y = d_h / f_h
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_geometry()
     
     def set_mode(self, mode: str):
         """Set selection mode: 'region' or 'tap'"""
@@ -55,6 +97,7 @@ class ScannerPreview(QWidget):
         """Update preview frame"""
         self._frame = frame
         self._frame_height, self._frame_width = frame.shape[:2]
+        self._update_geometry()
         self.update()
     
     def set_overlay_data(self, regions: list, targets: list):
@@ -65,15 +108,17 @@ class ScannerPreview(QWidget):
     
     def _widget_to_frame(self, pos: QPoint) -> Tuple[int, int]:
         """Convert widget coordinates to frame coordinates"""
-        scale_x = self._frame_width / self.width()
-        scale_y = self._frame_height / self.height()
-        return int(pos.x() * scale_x), int(pos.y() * scale_y)
+        if self._scale_x == 0 or self._scale_y == 0:
+            return 0, 0
+        fx = int((pos.x() - self._target_rect.x()) / self._scale_x)
+        fy = int((pos.y() - self._target_rect.y()) / self._scale_y)
+        return max(0, min(self._frame_width, fx)), max(0, min(self._frame_height, fy))
     
     def _frame_to_widget(self, x: int, y: int) -> Tuple[int, int]:
         """Convert frame coordinates to widget coordinates"""
-        scale_x = self.width() / self._frame_width
-        scale_y = self.height() / self._frame_height
-        return int(x * scale_x), int(y * scale_y)
+        wx = int(x * self._scale_x + self._target_rect.x())
+        wy = int(y * self._scale_y + self._target_rect.y())
+        return wx, wy
     
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() == Qt.LeftButton:
@@ -112,68 +157,65 @@ class ScannerPreview(QWidget):
             self.update()
     
     def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        
-        # Draw frame
-        if self._frame is not None:
-            from PySide6.QtGui import QImage, QPixmap
-            h, w = self._frame.shape[:2]
-            if self._frame.shape[2] == 4:
-                fmt = QImage.Format_RGBA8888
+        with QPainter(self) as painter:
+            painter.setRenderHint(QPainter.Antialiasing)
+            
+            # Draw frame
+            if self._frame is not None:
+                from PySide6.QtGui import QImage, QPixmap
+                h, w = self._frame.shape[:2]
+                fmt = QImage.Format_RGBA8888 if self._frame.shape[2] == 4 else QImage.Format_RGB888
+                qimg = QImage(self._frame.data, w, h, self._frame.strides[0], fmt)
+                pixmap = QPixmap.fromImage(qimg)
+                painter.drawPixmap(self._target_rect, pixmap)
             else:
-                fmt = QImage.Format_RGB888
-            qimg = QImage(self._frame.data, w, h, self._frame.strides[0], fmt)
-            pixmap = QPixmap.fromImage(qimg)
-            painter.drawPixmap(self.rect(), pixmap)
-        else:
-            painter.fillRect(self.rect(), QColor(30, 30, 30))
-        
-        # Draw regions (green boxes)
-        for region in self._regions:
-            wx, wy = self._frame_to_widget(region.x, region.y)
-            ww = int(region.width * self.width() / self._frame_width)
-            wh = int(region.height * self.height() / self._frame_height)
+                painter.fillRect(self.rect(), QColor(30, 30, 30))
             
-            painter.setPen(QPen(QColor(0, 255, 0, 200), 2))
-            painter.setBrush(QBrush(QColor(0, 255, 0, 30)))
-            painter.drawRect(wx, wy, ww, wh)
+            # Draw regions (green boxes)
+            for region in self._regions:
+                wx, wy = self._frame_to_widget(region.x, region.y)
+                ww = int(region.width * self._scale_x)
+                wh = int(region.height * self._scale_y)
+                
+                painter.setPen(QPen(QColor(0, 255, 0, 200), 2))
+                painter.setBrush(QBrush(QColor(0, 255, 0, 30)))
+                painter.drawRect(wx, wy, ww, wh)
+                
+                # Label
+                painter.setPen(QPen(QColor(0, 255, 0)))
+                painter.setFont(QFont("Arial", 10))
+                painter.drawText(wx + 5, wy + 15, region.name)
             
-            # Label
-            painter.setPen(QPen(QColor(0, 255, 0)))
-            painter.setFont(QFont("Arial", 10))
-            painter.drawText(wx + 5, wy + 15, region.name)
-        
-        # Draw tap targets (blue crosshairs)
-        for target in self._targets:
-            wx, wy = self._frame_to_widget(target.x, target.y)
+            # Draw tap targets (blue crosshairs)
+            for target in self._targets:
+                wx, wy = self._frame_to_widget(target.x, target.y)
+                
+                painter.setPen(QPen(QColor(0, 150, 255), 2))
+                painter.drawLine(wx - 15, wy, wx + 15, wy)
+                painter.drawLine(wx, wy - 15, wx, wy + 15)
+                painter.drawEllipse(wx - 8, wy - 8, 16, 16)
+                
+                # Label
+                painter.drawText(wx + 12, wy - 5, target.name)
             
-            painter.setPen(QPen(QColor(0, 150, 255), 2))
-            painter.drawLine(wx - 15, wy, wx + 15, wy)
-            painter.drawLine(wx, wy - 15, wx, wy + 15)
-            painter.drawEllipse(wx - 8, wy - 8, 16, 16)
+            # Draw current selection
+            if self._selection_rect and not self._selection_rect.isEmpty():
+                if self._mode == "region":
+                    painter.setPen(QPen(QColor(255, 255, 0), 2, Qt.DashLine))
+                    painter.setBrush(QBrush(QColor(255, 255, 0, 40)))
+                else:
+                    painter.setPen(QPen(QColor(0, 150, 255), 2, Qt.DashLine))
+                painter.drawRect(self._selection_rect)
             
-            # Label
-            painter.drawText(wx + 12, wy - 5, target.name)
-        
-        # Draw current selection
-        if self._selection_rect and not self._selection_rect.isEmpty():
-            if self._mode == "region":
-                painter.setPen(QPen(QColor(255, 255, 0), 2, Qt.DashLine))
-                painter.setBrush(QBrush(QColor(255, 255, 0, 40)))
-            else:
-                painter.setPen(QPen(QColor(0, 150, 255), 2, Qt.DashLine))
-            painter.drawRect(self._selection_rect)
-        
-        # Draw state label
-        painter.setPen(QPen(QColor(255, 255, 0)))
-        painter.setFont(QFont("Arial", 14, QFont.Bold))
-        painter.drawText(10, 25, f"State: {self._current_state}")
-        
-        # Draw mode indicator
-        mode_color = QColor(0, 255, 0) if self._mode == "region" else QColor(0, 150, 255)
-        painter.setPen(QPen(mode_color))
-        painter.drawText(10, 45, f"Mode: {self._mode.upper()}")
+            # Draw state label
+            painter.setPen(QPen(QColor(255, 255, 0)))
+            painter.setFont(QFont("Arial", 14, QFont.Bold))
+            painter.drawText(10, 25, f"State: {self._current_state}")
+            
+            # Draw mode indicator
+            mode_color = QColor(0, 255, 0) if self._mode == "region" else QColor(0, 150, 255)
+            painter.setPen(QPen(mode_color))
+            painter.drawText(10, 45, f"Mode: {self._mode.upper()}")
 
 
 class ScannerWidget(QWidget):
@@ -189,57 +231,85 @@ class ScannerWidget(QWidget):
         self._refresh_games()
     
     def _setup_ui(self):
-        layout = QVBoxLayout(self)
+        main_layout = QHBoxLayout(self)
+        
+        # Left Panel (Controls)
+        sidebar_widget = QWidget()
+        sidebar_layout = QVBoxLayout(sidebar_widget)
+        sidebar_layout.setContentsMargins(0, 0, 0, 0)
         
         # Game selector
-        game_group = QGroupBox("Game")
-        game_layout = QHBoxLayout(game_group)
-        self.game_combo = QComboBox()
-        self.load_btn = QPushButton("Load")
-        self.new_btn = QPushButton("New")
-        game_layout.addWidget(self.game_combo)
-        game_layout.addWidget(self.load_btn)
-        game_layout.addWidget(self.new_btn)
-        layout.addWidget(game_group)
+        game_group = QGroupBox("Game Management")
+        game_layout = QVBoxLayout(game_group)
         
-        # Scanner preview
-        self.preview = ScannerPreview()
-        layout.addWidget(self.preview, 1)
+        combo_layout = QHBoxLayout()
+        self.game_combo = QComboBox()
+        self.game_combo.setMinimumWidth(150)
+        self.refresh_btn = QPushButton("↻")
+        self.refresh_btn.setFixedWidth(30)
+        combo_layout.addWidget(self.game_combo)
+        combo_layout.addWidget(self.refresh_btn)
+        game_layout.addLayout(combo_layout)
+        
+        btn_layout = QHBoxLayout()
+        self.load_btn = QPushButton("📂 Load")
+        self.new_btn = QPushButton("✨ New")
+        btn_layout.addWidget(self.load_btn)
+        btn_layout.addWidget(self.new_btn)
+        game_layout.addLayout(btn_layout)
+        sidebar_layout.addWidget(game_group)
         
         # Mode buttons
-        mode_group = QGroupBox("Selection Mode")
-        mode_layout = QHBoxLayout(mode_group)
-        self.region_btn = QPushButton("📦 Region")
+        mode_group = QGroupBox("Tools")
+        mode_layout = QVBoxLayout(mode_group)
+        self.region_btn = QPushButton("📦 Define Region")
         self.region_btn.setCheckable(True)
         self.region_btn.setChecked(True)
-        self.tap_btn = QPushButton("👆 Tap Target")
+        self.tap_btn = QPushButton("👆 Mark Tap Target")
         self.tap_btn.setCheckable(True)
-        self.capture_btn = QPushButton("📷 Capture Asset")
         mode_layout.addWidget(self.region_btn)
         mode_layout.addWidget(self.tap_btn)
-        mode_layout.addWidget(self.capture_btn)
-        layout.addWidget(mode_group)
+        sidebar_layout.addWidget(mode_group)
         
         # Elements list
-        elements_group = QGroupBox("Defined Elements")
+        elements_group = QGroupBox("Elements")
         elements_layout = QVBoxLayout(elements_group)
         self.elements_list = QListWidget()
         elements_layout.addWidget(self.elements_list)
         
-        btn_layout = QHBoxLayout()
-        self.delete_btn = QPushButton("Delete")
-        self.save_btn = QPushButton("💾 Save")
-        btn_layout.addWidget(self.delete_btn)
-        btn_layout.addWidget(self.save_btn)
-        elements_layout.addLayout(btn_layout)
-        layout.addWidget(elements_group)
+        elem_btn_layout = QHBoxLayout()
+        self.delete_btn = QPushButton("🗑️ Delete")
+        self.save_btn = QPushButton("💾 Save Config")
+        elem_btn_layout.addWidget(self.delete_btn)
+        elem_btn_layout.addWidget(self.save_btn)
+        elements_layout.addLayout(elem_btn_layout)
+        sidebar_layout.addWidget(elements_group)
+        sidebar_layout.addStretch()
+        
+        # Add splitter
+        self.splitter = QSplitter(Qt.Horizontal)
+        self.splitter.addWidget(sidebar_widget)
+        
+        # Right side: Preview
+        self.preview_container = QFrame()
+        self.preview_container.setFrameStyle(QFrame.StyledPanel | QFrame.Sunken)
+        preview_layout = QVBoxLayout(self.preview_container)
+        preview_layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.preview = ScannerPreview()
+        preview_layout.addWidget(self.preview)
+        
+        self.splitter.addWidget(self.preview_container)
+        self.splitter.setStretchFactor(1, 4)
+        
+        main_layout.addWidget(self.splitter)
     
     def _connect_signals(self):
         self.load_btn.clicked.connect(self._load_game)
         self.new_btn.clicked.connect(self._new_game)
+        self.refresh_btn.clicked.connect(self._refresh_games)
         self.region_btn.clicked.connect(lambda: self._set_mode("region"))
         self.tap_btn.clicked.connect(lambda: self._set_mode("tap"))
-        self.capture_btn.clicked.connect(self._capture_asset)
         self.delete_btn.clicked.connect(self._delete_element)
         self.save_btn.clicked.connect(self._save_game)
         
@@ -261,7 +331,6 @@ class ScannerWidget(QWidget):
     def _new_game(self):
         name, ok = QInputDialog.getText(self, "New Game", "Game name:")
         if ok and name:
-            import os
             game_path = Path("games") / name
             game_path.mkdir(parents=True, exist_ok=True)
             (game_path / "states").mkdir(exist_ok=True)
@@ -279,20 +348,6 @@ class ScannerWidget(QWidget):
         self.preview.set_mode(mode)
         self.region_btn.setChecked(mode == "region")
         self.tap_btn.setChecked(mode == "tap")
-    
-    def _capture_asset(self):
-        """Capture current frame as an asset"""
-        if not self.game_config:
-            return
-        
-        frame = self.preview._frame
-        if frame is None:
-            return
-        
-        name, ok = QInputDialog.getText(self, "Asset Name", "Name for this asset:")
-        if ok and name:
-            if self.game_loader.save_asset(self.game_config, name, frame):
-                self._update_elements_list()
     
     def _on_region_selected(self, name: str, x: int, y: int, w: int, h: int):
         """Handle new region selection"""
@@ -322,13 +377,19 @@ class ScannerWidget(QWidget):
             return
         
         for name, region in self.game_config.regions.items():
-            self.elements_list.addItem(f"📦 {name} ({region.x},{region.y} {region.width}x{region.height})")
+            item = QListWidgetItem(f"📦 {name} ({region.x},{region.y} {region.width}x{region.height})")
+            item.setData(Qt.UserRole, {"type": "region", "name": name})
+            self.elements_list.addItem(item)
         
         for name, target in self.game_config.targets.items():
-            self.elements_list.addItem(f"👆 {name} ({target.x},{target.y})")
+            item = QListWidgetItem(f"👆 {name} ({target.x},{target.y})")
+            item.setData(Qt.UserRole, {"type": "target", "name": name})
+            self.elements_list.addItem(item)
         
         for asset in self.game_config.assets:
-            self.elements_list.addItem(f"🖼️ {asset}")
+            item = QListWidgetItem(f"🖼️ {asset}")
+            item.setData(Qt.UserRole, {"type": "asset", "name": asset})
+            self.elements_list.addItem(item)
     
     def _update_overlay(self):
         """Update preview overlay"""
@@ -346,15 +407,22 @@ class ScannerWidget(QWidget):
         if not item or not self.game_config:
             return
         
-        text = item.text()
-        name = text.split(" ")[1].split("(")[0].strip()
+        data = item.data(Qt.UserRole)
+        if not data:
+            return
+            
+        name = data["name"]
+        item_type = data["type"]
         
-        if text.startswith("📦"):
+        if item_type == "region":
             if name in self.game_config.regions:
                 del self.game_config.regions[name]
-        elif text.startswith("👆"):
+        elif item_type == "target":
             if name in self.game_config.targets:
                 del self.game_config.targets[name]
+        elif item_type == "asset":
+            if name in self.game_config.assets:
+                self.game_config.assets.remove(name)
         
         self._update_elements_list()
         self._update_overlay()

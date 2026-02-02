@@ -311,7 +311,7 @@ class MainWindow(QMainWindow):
         preview_layout = QVBoxLayout(preview_tab)
         self.preview_widget = DevicePreviewWidget()
         preview_layout.addWidget(self.preview_widget)
-        self.tab_widget.addTab(preview_tab, "📺 Preview")
+        self.tab_widget.addTab(preview_tab, "📺 Live")
         
         # Scanner tab
         self.scanner_widget = ScannerWidget()

@@ -11,7 +11,7 @@ from enum import Enum
 import numpy as np
 import cv2
 
-from game_loader import GameConfig, GameState, Region, TapTarget
+from game_loader import GameConfig, GameState
 
 
 class ActionType(Enum):
@@ -141,64 +141,182 @@ class FSMEngine:
             result = self._detect(target)
             detections.append(result)
         
-        # Check for found targets
-        found_targets = [d for d in detections if d.found]
-        
         # Build FSM state for overlay
         fsm_state = FSMState(
             state_name=self.current_state.upper(),
             detections=detections
         )
         
-        # Decision logic
-        if found_targets:
-            target = found_targets[0]
-            fsm_state.decision_text = f"Found: {target.name} → {state.action}"
+        # Check if this state has workflow logic
+        if state.logic:
+            # Extract variables from detections
+            variables = self._extract_variables(detections)
             
-            # Create action
-            if state.action == "TAP":
-                action = self._create_tap_action(target, state)
-                fsm_state.pending_action = action
-                
-                # Execute action
-                if self._action_callback:
-                    self._action_callback(action)
-                
-                # Transition to next state
-                if state.next_state:
-                    self._transition(state.next_state)
+            # Evaluate logic rules (sorted by priority)
+            for rule in state.logic:
+                if self._eval_condition(rule.condition, variables):
+                    fsm_state.decision_text = f"{rule.condition} → {rule.action}"
+                    
+                    if rule.action == "TAP":
+                        # Create tap action
+                        target_name = rule.target if rule.target else "tap_zone"
+                        action = self._create_tap_action_from_target(target_name)
+                        fsm_state.pending_action = action
+                        
+                        # Execute action
+                        if self._action_callback:
+                            self._action_callback(action)
+                    elif rule.action == "WAIT":
+                        fsm_state.decision_text = f"Waiting: {rule.condition}"
+                        # No action, just wait for next loop iteration
+                    
+                    # Use first matching rule (highest priority)
+                    break
+            else: # No rule matched, check for timeout if no logic rule handled it
+                if state.timeout_ms > 0:
+                    elapsed = (time.time() - self._state_enter_time) * 1000
+                    if elapsed > state.timeout_ms:
+                        fsm_state.decision_text = f"Timeout → {state.on_timeout}"
+                        if state.on_timeout:
+                            self._transition(state.on_timeout)
         else:
-            fsm_state.decision_text = f"Searching: {', '.join(state.detect)}"
+            # Original simple state logic
+            found_targets = [d for d in detections if d.found]
             
-            # Check timeout
-            if state.timeout_ms > 0:
-                elapsed = (time.time() - self._state_enter_time) * 1000
-                if elapsed > state.timeout_ms:
-                    fsm_state.decision_text = f"Timeout → {state.on_timeout}"
-                    if state.on_timeout:
-                        self._transition(state.on_timeout)
+            if found_targets:
+                target = found_targets[0]
+                fsm_state.decision_text = f"Found: {target.name} → {state.action}"
+                
+                # Create action
+                if state.action == "TAP":
+                    action = self._create_tap_action(target, state)
+                    fsm_state.pending_action = action
+                    
+                    # Execute action
+                    if self._action_callback:
+                        self._action_callback(action)
+                    
+                    # Transition to next state
+                    if state.next_state:
+                        self._transition(state.next_state)
+            else:
+                fsm_state.decision_text = f"Searching: {', '.join(state.detect)}"
+                
+                # Check timeout
+                if state.timeout_ms > 0:
+                    elapsed = (time.time() - self._state_enter_time) * 1000
+                    if elapsed > state.timeout_ms:
+                        fsm_state.decision_text = f"Timeout → {state.on_timeout}"
+                        if state.on_timeout:
+                            self._transition(state.on_timeout)
         
         # Notify overlay
         if self._state_callback:
             self._state_callback(fsm_state)
     
+    def _extract_variables(self, detections: List[DetectionResult]) -> Dict[str, float]:
+        """Extract variables from detection results for logic evaluation"""
+        
+        # If game has custom functions with extract_variables, use that
+        if self.config.game_functions and hasattr(self.config.game_functions, 'extract_variables'):
+            if self._latest_frame is not None:
+                try:
+                    return self.config.game_functions.extract_variables(self._latest_frame)
+                except Exception as e:
+                    print(f"Game function extract_variables error: {e}")
+        
+        # Default extraction from detections
+        variables = {}
+        
+        pipe_top_y = None
+        pipe_bottom_y = None
+        
+        for det in detections:
+            if not det.found:
+                continue
+            
+            # Extract bird position
+            if det.name == "bird" and det.location:
+                variables["bird_y"] = det.location[1]
+                variables["bird_x"] = det.location[0]
+            
+            # Extract pipe positions
+            elif det.name == "pipe_top" and det.region:
+                x, y, w, h = det.region
+                pipe_top_y = y + h  # Bottom edge of top pipe
+                variables["pipe_top_y"] = pipe_top_y
+            
+            elif det.name == "pipe_bottom" and det.region:
+                x, y, w, h = det.region
+                pipe_bottom_y = y  # Top edge of bottom pipe
+                variables["pipe_bottom_y"] = pipe_bottom_y
+        
+        # Calculate gap center if both pipes detected
+        if pipe_top_y is not None and pipe_bottom_y is not None:
+            variables["gap_center_y"] = (pipe_top_y + pipe_bottom_y) / 2
+            variables["gap_height"] = pipe_bottom_y - pipe_top_y
+        
+        return variables
+    
+    def _eval_condition(self, condition: str, variables: Dict[str, float]) -> bool:
+        """Evaluate a condition string with variables"""
+        # Handle special case
+        if condition.strip() == "true":
+            return True
+        
+        try:
+            # Replace variables in condition
+            expr = condition
+            for var_name, var_value in variables.items():
+                expr = expr.replace(var_name, str(var_value))
+            
+            # Evaluate the expression safely
+            # Only allow basic math and comparisons
+            allowed_names = {"__builtins__": {}}
+            result = eval(expr, allowed_names)
+            return bool(result)
+        except Exception as e:
+            print(f"Condition eval error: {condition} -> {e}")
+            return False
+    
+    def _create_tap_action_from_target(self, target_name: str) -> FSMAction:
+        """Create tap action from a named target in config"""
+        if target_name in self.config.targets:
+            target = self.config.targets[target_name]
+            return FSMAction(
+                action_type=ActionType.TAP,
+                target_x=target.x,
+                target_y=target.y
+            )
+        else:
+            print(f"Warning: Tap target '{target_name}' not found in config. Tapping center.")
+            return FSMAction(
+                action_type=ActionType.TAP,
+                target_x=self.config.screen_width // 2,
+                target_y=self.config.screen_height // 2
+            )
+    
     def _detect(self, target_name: str) -> DetectionResult:
         """Detect a target in current frame"""
         if self._latest_frame is None:
+            print(f"  [DETECT] {target_name}: No frame available")
             return DetectionResult(name=target_name, found=False)
         
         # Check if we have a template
         if target_name in self._templates:
+            print(f"  [DETECT] {target_name}: Using template matching")
             return self._template_match(target_name)
         
         # Check if we have a color definition
         if target_name in self.config.colors:
+            print(f"  [DETECT] {target_name}: Using color detection")
             return self._color_detect(target_name)
         
         # Check if it's a region-based detection
         if target_name in self.config.regions:
             # For now, just return the region center as found
             region = self.config.regions[target_name]
+            print(f"  [DETECT] {target_name}: Region-based (always found)")
             return DetectionResult(
                 name=target_name,
                 found=True,
@@ -207,6 +325,7 @@ class FSMEngine:
                 region=region.as_tuple()
             )
         
+        print(f"  [DETECT] {target_name}: No detection method found (not in templates, colors, or regions)")
         return DetectionResult(name=target_name, found=False)
     
     def _template_match(self, name: str) -> DetectionResult:
@@ -224,9 +343,11 @@ class FSMEngine:
             x, y, w, h = region.as_tuple()
             search_area = frame[y:y+h, x:x+w]
             offset = (x, y)
+            print(f"    Searching in region: {name}_search ({x}, {y}, {w}, {h})")
         else:
             search_area = frame
             offset = (0, 0)
+            print("    Searching in full frame")
         
         # Template match
         try:
@@ -234,11 +355,14 @@ class FSMEngine:
             _, max_val, _, max_loc = cv2.minMaxLoc(result)
             
             threshold = 0.7  # Configurable
+            print(f"    Template match score: {max_val:.3f} (threshold: {threshold})")
+            
             if max_val > threshold:
                 th, tw = template.shape[:2]
                 cx = offset[0] + max_loc[0] + tw // 2
                 cy = offset[1] + max_loc[1] + th // 2
                 
+                print(f"    ✓ FOUND at ({cx}, {cy})")
                 return DetectionResult(
                     name=name,
                     found=True,
@@ -246,8 +370,10 @@ class FSMEngine:
                     location=(cx, cy),
                     region=(offset[0] + max_loc[0], offset[1] + max_loc[1], tw, th)
                 )
+            else:
+                print("    ✗ NOT FOUND (score too low)")
         except Exception as e:
-            print(f"Template match error: {e}")
+            print(f"    ✗ Template match error: {e}")
         
         return DetectionResult(name=name, found=False)
     
@@ -288,19 +414,23 @@ class FSMEngine:
     
     def _create_tap_action(self, detection: DetectionResult, state: GameState) -> FSMAction:
         """Create tap action from detection"""
-        # Use detection location or configured target
-        if detection.location:
-            x, y = detection.location
-        elif state.next_state in self.config.targets:
-            target = self.config.targets[state.next_state]
+        # Priority: state.target > detection.location > region center > screen center
+        if state.target and state.target in self.config.targets:
+            # Use explicitly configured target
+            target = self.config.targets[state.target]
             x, y = target.x, target.y
-        else:
+            print(f"    Using target: {state.target} ({x}, {y})")
+        elif detection.location:
+            x, y = detection.location
+            print(f"    Using detection location: ({x}, {y})")
+        elif detection.region:
             # Use center of detected region
-            if detection.region:
-                rx, ry, rw, rh = detection.region
-                x, y = rx + rw // 2, ry + rh // 2
-            else:
-                x, y = self.config.screen_width // 2, self.config.screen_height // 2
+            rx, ry, rw, rh = detection.region
+            x, y = rx + rw // 2, ry + rh // 2
+            print(f"    Using region center: ({x}, {y})")
+        else:
+            x, y = self.config.screen_width // 2, self.config.screen_height // 2
+            print(f"    Using screen center: ({x}, {y})")
         
         return FSMAction(
             action_type=ActionType.TAP,

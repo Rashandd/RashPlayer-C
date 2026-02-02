@@ -16,9 +16,10 @@ polling_hz: 60
 # State machine
 states:
   menu:
-    detect: play_button
+    detect: menu_area
     on_found:
       action: TAP
+      target: play_button
       next_state: gameplay
     timeout_ms: 5000
     on_timeout: menu
