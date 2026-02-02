@@ -10,6 +10,9 @@ PyOpenGL>=3.1.6
 numpy>=1.24.0
 Pillow>=10.0.0
 
+# Video decoding
+av>=12.0.0
+
 # Configuration parsing
 PyYAML>=6.0
 

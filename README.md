@@ -2,7 +2,7 @@
 
 **RashPlayer-C** is a high-performance, modular mobile automation framework designed for low-latency game automation. It combines a distinct **C-Core** for sub-10ms vision and logic processing with a flexible **Python Shell** for device management and UI.
 
-![Architecture](https://mermaid.ink/img/pako:eNo9kE1rwzAMhv9K0KkF9zB622Eccyilp512KLaT2EStYyS7jZWy_z45bQ-D9aHvU-hL2jE5a9Co-bXWj4O9Wz9ozf3x-LHC-Xq7P2G12eF0uV3g8oT1Q4Pz4_kCh_0ep-0Op8c9zpefF-yP_w0qCArIQZFCUeKIMiF5jRInFOWCskLJRimpFColjZJCKan1d9JGSaOU1Eoa_Z20UdIopaSWNHpI2vjX9O8-vX8fX_4tKKA4IC-w5lAxqAgqChWDisOaQ8Wg4rDmmDCoOKw5JgwqDmuOCYOKw5pjwqDisOaYMKg4rDmmDCoOaw4Vw_8D-g2q6H0B)
+
 
 ## 🚀 Key Features
 
@@ -70,7 +70,7 @@ decision_logic:
     action: TAP
 ```
 
-## 🧠 Memory Bank
+## Memory Bank
 
 For AI agents contributing to this project, please refer to the `.memorybank/` directory for detailed context, architecture patterns, and active tasks.
 

@@ -1,0 +1,7 @@
+Collecting av
+  Downloading av-16.1.0-cp312-cp312-manylinux_2_28_x86_64.whl.metadata (4.6 kB)
+Downloading av-16.1.0-cp312-cp312-manylinux_2_28_x86_64.whl (41.2 MB)
+   ━━━ 41… 2… eta 0:0…
+       MB  M…         
+Installing collected packages: av
+Successfully installed av-16.1.0

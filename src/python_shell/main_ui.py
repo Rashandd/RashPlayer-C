@@ -107,9 +107,18 @@ class PreviewThread(QThread):
         self.running = True
         
         def on_frame(frame: np.ndarray):
-            self.frame_captured.emit(frame)
+            try:
+                self.frame_captured.emit(frame)
+            except Exception as e:
+                print(f"Frame emit error: {e}")
         
-        self.device.start_capture(on_frame)
+        try:
+            print(f"Starting capture for device: {type(self.device).__name__}")
+            started = self.device.start_capture(on_frame)
+            print(f"Capture started: {started}")
+        except Exception as e:
+            print(f"Failed to start capture: {e}")
+            return
         
         while self.running:
             time.sleep(0.016)  # Just keep thread alive
