@@ -1,0 +1,37 @@
+# Flappy Bird Bot
+# FSM-based game automation
+
+name: "Flappy Bird"
+version: "1.0"
+initial_state: menu
+
+# Screen resolution (will be auto-detected)
+screen:
+  width: 1080
+  height: 2400
+
+# Processing settings
+polling_hz: 60
+
+# State machine
+states:
+  menu:
+    detect: play_button
+    on_found:
+      action: TAP
+      next_state: gameplay
+    timeout_ms: 5000
+    on_timeout: menu
+
+  gameplay:
+    workflow: states/gameplay.yaml
+    exit_on: [game_over]
+    on_exit:
+      game_over: result
+
+  result:
+    detect: game_over
+    wait_ms: 1500
+    action: TAP
+    target: restart_button
+    next_state: menu

@@ -1,0 +1,28 @@
+# Flappy Bird - Color Definitions
+# HSV color ranges for detection
+
+colors:
+  bird_yellow:
+    hsv_low: [20, 150, 150]
+    hsv_high: [40, 255, 255]
+    description: "Yellow bird color"
+  
+  pipe_green:
+    hsv_low: [35, 100, 100]
+    hsv_high: [85, 255, 255]
+    description: "Green pipe color"
+  
+  sky_blue:
+    hsv_low: [90, 50, 150]
+    hsv_high: [130, 255, 255]
+    description: "Background sky"
+  
+  ground_brown:
+    hsv_low: [10, 50, 100]
+    hsv_high: [30, 200, 200]
+    description: "Ground/floor color"
+  
+  button_orange:
+    hsv_low: [5, 150, 150]
+    hsv_high: [25, 255, 255]
+    description: "Play/restart button"

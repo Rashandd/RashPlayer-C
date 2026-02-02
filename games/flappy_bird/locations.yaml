@@ -1,0 +1,49 @@
+# Flappy Bird - Screen Locations
+# Define tap targets and detection regions
+
+# Tap targets (x, y coordinates)
+targets:
+  play_button:
+    x: 540
+    y: 1400
+    description: "Main menu play button"
+  
+  restart_button:
+    x: 540
+    y: 1600
+    description: "Game over restart button"
+  
+  tap_zone:
+    x: 540
+    y: 1200
+    description: "General tap area during gameplay"
+
+# Detection regions (x, y, width, height)
+regions:
+  bird_search:
+    x: 100
+    y: 400
+    width: 400
+    height: 1600
+    description: "Area to search for bird"
+  
+  pipe_search:
+    x: 500
+    y: 0
+    width: 400
+    height: 2400
+    description: "Area to search for pipes"
+  
+  menu_area:
+    x: 200
+    y: 1200
+    width: 680
+    height: 400
+    description: "Menu buttons area"
+  
+  game_over_area:
+    x: 200
+    y: 600
+    width: 680
+    height: 600
+    description: "Game over screen area"

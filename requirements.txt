@@ -9,6 +9,7 @@ PyOpenGL>=3.1.6
 # Image processing
 numpy>=1.24.0
 Pillow>=10.0.0
+opencv-python-headless>=4.8.0
 
 # Video decoding
 av>=12.0.0

@@ -19,10 +19,11 @@ The system uses a split-process architecture:
 1.  **C-Core (`librashplayer.so`)**:
     *   **Vision Engine**: SIMD-optimized (SSE4.2/NEON) template matching and color search.
     *   **Logic Brain**: Finite State Machine (FSM) that processes game states at 100Hz.
-2.  **Python Shell**:
+2.  **Python**:
     *   **PySide6 UI**: Real-time OpenGL preview and controls.
     *   **Device Manager**: Abstracts ADB and Scrcpy interactions.
     *   **Gesture Executor**: Generates natural input events.
+    *   **FSM Engine**: State machine for game automation workflows.
 
 ## 📦 Installation
 
@@ -48,27 +49,28 @@ pip install -r requirements.txt
 1.  **Connect your device** via USB or start your emulator.
 2.  **Launch the UI**:
     ```bash
-    cd src/python_shell
+    cd src/python
     python main_ui.py
     ```
-3.  **Select your device** from the dropdown loop.
-4.  **Load a Workflow** (e.g., `src/metadata/flappy_bird.yaml`).
-5.  Click **▶ Start** to begin automation.
+3.  **Select your device** from the dropdown.
+4.  **Load a Game** from `games/` folder (e.g., flappy_bird).
+5.  Click **▶ Start** to run the FSM automation.
 
-## 🧩 Modifying Workflows
+## 🧩 Creating Game Workflows
 
-Workflows are defined in `src/metadata/`. Example `flappy_bird.yaml`:
+Games are defined in `games/` directory with FSM structure:
 
-```yaml
-visual_triggers:
-  bird:
-    type: template_match
-    image: "assets/bird.png"
-
-decision_logic:
-  - condition: "bird_y > gap_center_y + 20"
-    action: TAP
 ```
+games/flappy_bird/
+├── main.yaml          # State machine: menu → gameplay → result
+├── states/
+│   └── gameplay.yaml  # Active game logic
+├── assets/            # Template images for detection
+├── locations.yaml     # Tap targets and regions
+└── colors.yaml        # HSV color definitions
+```
+
+Use the **Scanner tab** in the UI to interactively define screen elements.
 
 ## Memory Bank
 

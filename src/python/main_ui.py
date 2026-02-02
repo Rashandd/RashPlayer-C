@@ -10,7 +10,7 @@ from pathlib import Path
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QComboBox, QLabel, QGroupBox, QFileDialog,
-    QStatusBar, QFrame, QSlider, QSpinBox
+    QStatusBar, QFrame, QSlider, QSpinBox, QTabWidget
 )
 from PySide6.QtCore import Qt, QTimer, Signal, QThread
 from PySide6.QtGui import QImage, QPixmap
@@ -26,6 +26,11 @@ from device_manager import DeviceManager, DeviceInterface
 from gesture_executor import GestureExecutor
 from shared_bridge import SharedMemoryBridge, GameState
 from yaml_parser import YAMLParser, WorkflowConfig
+from capture_manager import CaptureManager
+from detection_overlay import DetectionOverlay
+from scanner_widget import ScannerWidget
+from game_loader import GameLoader, GameConfig
+from fsm_engine import FSMEngine, FSMState, FSMAction, ActionType
 
 
 class DevicePreviewWidget(QOpenGLWidget):
@@ -131,27 +136,31 @@ class PreviewThread(QThread):
 
 
 class ProcessingThread(QThread):
-    """Background thread for C-Core processing loop"""
+    """Background thread for C-Core processing loop (uses shared capture)"""
     
     results_ready = Signal(list, object, tuple)
-    frame_captured = Signal(np.ndarray)
+    overlay_updated = Signal(object)  # DetectionOverlay state
     
-    def __init__(self, bridge: SharedMemoryBridge, device: DeviceInterface):
+    def __init__(self, bridge: SharedMemoryBridge, capture_manager: CaptureManager):
         super().__init__()
         self.bridge = bridge
-        self.device = device
+        self.capture_manager = capture_manager
+        self.overlay = DetectionOverlay()
         self.running = False
         self.polling_hz = 60
     
     def run(self):
         self.running = True
         interval = 1.0 / self.polling_hz
+        frame_count = 0
+        start_time = time.time()
         
+        # Register callback with shared capture manager
         def on_frame(frame: np.ndarray):
             self.bridge.write_frame(frame)
-            self.frame_captured.emit(frame)
         
-        self.device.start_capture(on_frame)
+        self.capture_manager.add_callback(on_frame)
+        self.overlay.set_fsm_state("RUNNING")
         
         while self.running:
             loop_start = time.time()
@@ -160,12 +169,22 @@ class ProcessingThread(QThread):
             if ready:
                 latency = self.bridge.get_latency()
                 self.results_ready.emit(results, action, latency)
+                
+                # Update overlay with detection results
+                self.overlay.set_metrics(
+                    fps=frame_count / (time.time() - start_time + 0.001),
+                    latency_ms=latency[0] if latency else 0
+                )
+                self.overlay_updated.emit(self.overlay.get_state())
+            
+            frame_count += 1
             
             elapsed = time.time() - loop_start
             if elapsed < interval:
                 time.sleep(interval - elapsed)
         
-        self.device.stop_capture()
+        self.capture_manager.remove_callback(on_frame)
+        self.overlay.set_fsm_state("STOPPED")
     
     def stop(self):
         self.running = False
@@ -184,8 +203,11 @@ class MainWindow(QMainWindow):
         self.bridge = SharedMemoryBridge()
         self.gesture_executor: GestureExecutor | None = None
         self.workflow: WorkflowConfig | None = None
-        self.preview_thread: PreviewThread | None = None
+        self.capture_manager: CaptureManager | None = None
         self.processing_thread: ProcessingThread | None = None
+        self.game_loader = GameLoader()
+        self.game_config: GameConfig | None = None
+        self.fsm_engine: FSMEngine | None = None
         
         self._setup_ui()
         self._connect_signals()
@@ -221,22 +243,29 @@ class MainWindow(QMainWindow):
         left_panel.addWidget(device_group)
         
         # Workflow group
-        workflow_group = QGroupBox("Workflow")
+        workflow_group = QGroupBox("Game / Workflow")
         workflow_layout = QVBoxLayout(workflow_group)
         
-        self.workflow_label = QLabel("No workflow loaded")
-        workflow_layout.addWidget(self.workflow_label)
+        # Game selector
+        self.game_combo = QComboBox()
+        self.game_combo.setPlaceholderText("Select game...")
+        workflow_layout.addWidget(self.game_combo)
         
-        self.load_workflow_btn = QPushButton("Load YAML...")
-        workflow_layout.addWidget(self.load_workflow_btn)
+        game_btn_layout = QHBoxLayout()
+        self.load_game_btn = QPushButton("Load Game")
+        self.refresh_games_btn = QPushButton("↻")
+        self.refresh_games_btn.setMaximumWidth(30)
+        game_btn_layout.addWidget(self.load_game_btn)
+        game_btn_layout.addWidget(self.refresh_games_btn)
+        workflow_layout.addLayout(game_btn_layout)
         
-        hz_layout = QHBoxLayout()
-        hz_layout.addWidget(QLabel("Polling Hz:"))
-        self.hz_spin = QSpinBox()
-        self.hz_spin.setRange(10, 200)
-        self.hz_spin.setValue(60)
-        hz_layout.addWidget(self.hz_spin)
-        workflow_layout.addLayout(hz_layout)
+        self.game_label = QLabel("No game loaded")
+        workflow_layout.addWidget(self.game_label)
+        
+        # FSM state display
+        self.fsm_state_label = QLabel("State: IDLE")
+        self.fsm_state_label.setStyleSheet("font-weight: bold; color: #00ff00;")
+        workflow_layout.addWidget(self.fsm_state_label)
         
         left_panel.addWidget(workflow_group)
         
@@ -274,14 +303,21 @@ class MainWindow(QMainWindow):
         
         layout.addLayout(left_panel, 1)
         
-        # Right panel - Preview
-        preview_group = QGroupBox("Device Preview")
-        preview_layout = QVBoxLayout(preview_group)
+        # Right panel - Tabbed view (Preview + Scanner)
+        self.tab_widget = QTabWidget()
         
+        # Preview tab
+        preview_tab = QWidget()
+        preview_layout = QVBoxLayout(preview_tab)
         self.preview_widget = DevicePreviewWidget()
         preview_layout.addWidget(self.preview_widget)
+        self.tab_widget.addTab(preview_tab, "📺 Preview")
         
-        layout.addWidget(preview_group, 3)
+        # Scanner tab
+        self.scanner_widget = ScannerWidget()
+        self.tab_widget.addTab(self.scanner_widget, "🔍 Scanner")
+        
+        layout.addWidget(self.tab_widget, 3)
         
         # Status bar
         self.statusBar = QStatusBar()
@@ -291,10 +327,14 @@ class MainWindow(QMainWindow):
     def _connect_signals(self):
         self.scan_btn.clicked.connect(self._scan_devices)
         self.connect_btn.clicked.connect(self._connect_device)
-        self.load_workflow_btn.clicked.connect(self._load_workflow)
-        self.start_btn.clicked.connect(self._start_processing)
-        self.stop_btn.clicked.connect(self._stop_processing)
+        self.load_game_btn.clicked.connect(self._load_game)
+        self.refresh_games_btn.clicked.connect(self._refresh_games)
+        self.start_btn.clicked.connect(self._start_fsm)
+        self.stop_btn.clicked.connect(self._stop_fsm)
         self.device_combo.currentIndexChanged.connect(self._on_device_selected)
+        
+        # Initial game list refresh
+        QTimer.singleShot(200, self._refresh_games)
     
     def _scan_devices(self):
         self.statusBar.showMessage("Scanning devices...")
@@ -317,10 +357,10 @@ class MainWindow(QMainWindow):
         if not serial:
             return
         
-        # Stop any existing preview
-        if self.preview_thread:
-            self.preview_thread.stop()
-            self.preview_thread = None
+        # Stop any existing capture
+        if self.capture_manager:
+            self.capture_manager.stop()
+            self.capture_manager = None
         
         self.statusBar.showMessage(f"Connecting to {serial}...")
         device = self.device_manager.connect_device(serial)
@@ -334,66 +374,91 @@ class MainWindow(QMainWindow):
             if not self.bridge.create():
                 self.statusBar.showMessage("Failed to create shared memory!")
             
-            # Start preview thread immediately
-            self.preview_thread = PreviewThread(device)
-            self.preview_thread.frame_captured.connect(self.preview_widget.update_frame)
-            self.preview_thread.start()
-            self.statusBar.showMessage(f"Connected to {serial} - Live preview active")
+            # Start capture manager (shared between preview and processing)
+            self.capture_manager = CaptureManager(device)
+            self.capture_manager.add_callback(self.preview_widget.update_frame)
+            self.capture_manager.add_callback(self.scanner_widget.update_frame)
+            
+            if self.capture_manager.start():
+                self.statusBar.showMessage(f"Connected to {serial} - Live preview active")
+            else:
+                self.statusBar.showMessage(f"Connected to {serial} - Preview failed to start")
         else:
             self.statusBar.showMessage(f"Failed to connect to {serial}")
     
-    def _load_workflow(self):
-        filepath, _ = QFileDialog.getOpenFileName(
-            self, "Load Workflow", 
-            str(Path(__file__).parent.parent / "metadata"),
-            "YAML Files (*.yaml *.yml)"
-        )
-        
-        if filepath:
-            try:
-                self.workflow = YAMLParser.load(filepath)
-                self.workflow_label.setText(f"{self.workflow.name} v{self.workflow.version}")
-                self.hz_spin.setValue(self.workflow.polling_hz)
-                self.statusBar.showMessage(f"Loaded workflow: {self.workflow.name}")
-            except Exception as e:
-                self.statusBar.showMessage(f"Failed to load workflow: {e}")
+    def _refresh_games(self):
+        """Refresh game list"""
+        self.game_combo.clear()
+        for game in self.game_loader.list_games():
+            self.game_combo.addItem(game, game)
+        self.statusBar.showMessage(f"Found {self.game_combo.count()} game(s)")
     
-    def _start_processing(self):
-        device = self.device_manager.get_active_device()
-        if not device:
+    def _load_game(self):
+        """Load selected game"""
+        game_name = self.game_combo.currentData()
+        if not game_name:
             return
         
-        # Stop preview thread (processing thread will handle frames)
-        if self.preview_thread:
-            self.preview_thread.stop()
-            self.preview_thread = None
+        self.game_config = self.game_loader.load(game_name)
+        if self.game_config:
+            self.game_label.setText(f"{self.game_config.name} v{self.game_config.version}")
+            self.statusBar.showMessage(f"Loaded: {self.game_config.name}")
+            
+            # Enable start if device connected
+            if self.capture_manager:
+                self.start_btn.setEnabled(True)
+        else:
+            self.game_label.setText("Failed to load game")
+    
+    def _start_fsm(self):
+        """Start FSM engine"""
+        if not self.game_config or not self.capture_manager:
+            return
         
-        self.processing_thread = ProcessingThread(self.bridge, device)
-        self.processing_thread.polling_hz = self.hz_spin.value()
-        self.processing_thread.results_ready.connect(self._on_results)
-        self.processing_thread.frame_captured.connect(self.preview_widget.update_frame)
-        self.processing_thread.start()
+        # Create FSM engine
+        self.fsm_engine = FSMEngine(self.game_config)
+        self.fsm_engine.set_state_callback(self._on_fsm_state)
+        self.fsm_engine.set_action_callback(self._on_fsm_action)
+        
+        # Connect frame updates
+        self.capture_manager.add_callback(self.fsm_engine.update_frame)
+        
+        # Start FSM
+        self.fsm_engine.start()
         
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
-        self.statusBar.showMessage("Processing started")
+        self.statusBar.showMessage(f"FSM running: {self.game_config.name}")
     
-    def _stop_processing(self):
-        device = self.device_manager.get_active_device()
+    def _stop_fsm(self):
+        """Stop FSM engine"""
+        if self.fsm_engine:
+            if self.capture_manager:
+                self.capture_manager.remove_callback(self.fsm_engine.update_frame)
+            self.fsm_engine.stop()
+            self.fsm_engine = None
         
-        if self.processing_thread:
-            self.processing_thread.stop()
-            self.processing_thread = None
-        
-        # Restart preview thread
-        if device and not self.preview_thread:
-            self.preview_thread = PreviewThread(device)
-            self.preview_thread.frame_captured.connect(self.preview_widget.update_frame)
-            self.preview_thread.start()
-        
+        self.fsm_state_label.setText("State: STOPPED")
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
-        self.statusBar.showMessage("Processing stopped - Preview active")
+        self.statusBar.showMessage("FSM stopped")
+    
+    def _on_fsm_state(self, state: FSMState):
+        """Handle FSM state updates"""
+        self.fsm_state_label.setText(f"State: {state.state_name}")
+        
+        # Update scanner overlay if on scanner tab
+        if hasattr(self, 'scanner_widget'):
+            self.scanner_widget.preview.set_state(state.state_name)
+    
+    def _on_fsm_action(self, action: FSMAction):
+        """Handle FSM action execution"""
+        if not self.gesture_executor:
+            return
+        
+        if action.action_type == ActionType.TAP:
+            self.gesture_executor.tap(action.target_x, action.target_y)
+            self.statusBar.showMessage(f"TAP: ({action.target_x}, {action.target_y})")
     
     def _on_results(self, results, action, latency):
         vision_us, brain_us, total_us = latency

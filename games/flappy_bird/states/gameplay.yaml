@@ -1,0 +1,28 @@
+# Flappy Bird Gameplay State
+# Active game logic - runs while playing
+
+name: "Gameplay"
+polling_hz: 100  # Fast polling for responsive taps
+
+# Detection targets
+detect:
+  - bird
+  - pipe_top
+  - pipe_bottom
+
+# Decision logic (evaluated by priority)
+logic:
+  # If bird below pipe gap center, tap
+  - condition: "bird_y > gap_center_y + 30"
+    action: TAP
+    priority: 100
+
+  # If bird slightly below, tap
+  - condition: "bird_y > gap_center_y"
+    action: TAP
+    priority: 80
+
+  # Otherwise wait
+  - condition: "true"
+    action: WAIT
+    priority: 0
