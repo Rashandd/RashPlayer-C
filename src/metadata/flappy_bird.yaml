@@ -1,0 +1,101 @@
+# RashPlayer-C: Flappy Bird Bot Configuration
+# Example workflow demonstrating visual triggers and decision logic
+
+name: "Flappy Bird Bot"
+version: "1.0"
+polling_hz: 100
+
+# Visual trigger definitions
+visual_triggers:
+  bird_template:
+    type: template_match
+    image: "assets/bird.png"
+    threshold: 0.85
+    region:
+      x: 0
+      y: 0
+      width: 400
+      height: 1080
+
+  pipe_gap_top:
+    type: color_edge
+    color_hsv: [35, 200, 200]  # Green pipe color
+    edge_direction: horizontal
+    region:
+      x: 300
+      y: 0
+      width: 200
+      height: 540
+
+  pipe_gap_bottom:
+    type: color_edge
+    color_hsv: [35, 200, 200]
+    edge_direction: horizontal
+    region:
+      x: 300
+      y: 540
+      width: 200
+      height: 540
+
+  game_over_screen:
+    type: template_match
+    image: "assets/game_over.png"
+    threshold: 0.90
+    region:
+      x: 300
+      y: 300
+      width: 320
+      height: 200
+
+# Decision logic rules (evaluated in order of priority)
+decision_logic:
+  # If game over, tap to restart
+  - condition: "trigger_4_found == 1"
+    action: TAP
+    target:
+      x: 480
+      y: 640
+    priority: 100
+
+  # If bird is significantly below gap center, tap immediately
+  - condition: "bird_y > gap_center_y + 50"
+    action: TAP
+    target:
+      x: 240
+      y: 400
+    priority: 80
+
+  # If bird is moderately below gap center, tap
+  - condition: "bird_y > gap_center_y + 20"
+    action: TAP
+    target:
+      x: 240
+      y: 400
+    priority: 60
+
+  # If bird is slightly below gap center, prepare to tap
+  - condition: "bird_y > gap_center_y"
+    action: TAP
+    target:
+      x: 240
+      y: 400
+    priority: 40
+
+  # If bird is above gap center, wait
+  - condition: "bird_y < gap_center_y - 10"
+    action: WAIT
+    priority: 20
+
+  # Default: do nothing
+  - condition: "1 == 1"
+    action: NONE
+    priority: 0
+
+# Game-specific constants
+constants:
+  screen_width: 480
+  screen_height: 854
+  gravity_pixels_per_frame: 3
+  tap_velocity: -8
+  pipe_gap_height: 150
+  pipe_speed: 4

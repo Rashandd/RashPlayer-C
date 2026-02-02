@@ -1,0 +1,20 @@
+# RashPlayer-C Python Dependencies
+
+# UI Framework
+PySide6>=6.5.0
+
+# OpenGL rendering
+PyOpenGL>=3.1.6
+
+# Image processing
+numpy>=1.24.0
+Pillow>=10.0.0
+
+# Configuration parsing
+PyYAML>=6.0
+
+# Shared memory IPC
+posix-ipc>=1.1.1
+
+# Development tools
+pytest>=7.4.0
